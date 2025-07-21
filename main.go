@@ -89,4 +89,10 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	pathToNewFile, err := app.CopyMainFile("./mainFile/main.xlsx")
+	if err != nil {
+		fmt.Println(err)
+	}
+	_ = pathToNewFile
 }

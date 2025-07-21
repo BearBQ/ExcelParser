@@ -2,9 +2,12 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -199,6 +202,9 @@ func GetMap(data <-chan LineResult) (MapWithData, error) {
 }
 
 func NewFileResult(data MapWithData) error {
+	if err := os.MkdirAll("./work", 0755); err != nil {
+		return fmt.Errorf("не удалось создать папку work: %v", err)
+	}
 	f := excelize.NewFile()
 	defer func() {
 		if err := f.Close(); err != nil {
@@ -252,12 +258,56 @@ func NewFileResult(data MapWithData) error {
 	})
 	f.SetCellStyle(sheetName, "A1", fmt.Sprintf("H1"), headerStyle)
 
-	fileName := "products_report.xlsx"
+	fileName := "./work/products_report.xlsx"
 	if err := f.SaveAs(fileName); err != nil {
 		log.Fatal("Ошибка сохранения файла:", err)
 	}
 
-	fmt.Printf("Отчет успешно создан: %s\n", fileName)
-	fmt.Printf("Всего товаров: %d\n", len(data.IdProduct))
+	log.Printf("Отчет успешно создан: %s\n", fileName)
+	log.Printf("Всего товаров: %d\n", len(data.IdProduct))
 	return nil
+}
+
+// CopyMainFile создает рабочую копию основного файла
+func CopyMainFile(filePath string) (string, error) {
+	// Создаем папку для рабочих файлов
+	workDir := "./work"
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return "", fmt.Errorf("ошибка создания рабочей папки: %v", err)
+	}
+
+	// Формируем имя копии с timestamp
+	ext := filepath.Ext(filePath)
+	filename := strings.TrimSuffix(filepath.Base(filePath), ext)
+	timestamp := time.Now().Format("20060102_150405")
+	copyName := fmt.Sprintf("%s_work_%s%s", filename, timestamp, ext)
+	copyPath := filepath.Join(workDir, copyName)
+
+	// Копируем файл
+	src, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка открытия исходного файла: %v", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(copyPath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания копии: %v", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", fmt.Errorf("ошибка копирования данных: %v", err)
+	}
+
+	log.Printf("Создана рабочая копия: %s", copyPath)
+	return copyPath, nil
+}
+
+func PullDataInCopy(filepath string, data MapWithData) error {
+	if filepath == "" {
+		return fmt.Errorf("Путь к файлу пустой")
+	}
+	log.Println("Запущена процедура записи данных в файл")
+
 }
