@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,11 +59,6 @@ func GetDataFromMainExcel(name string) ([]string, error) {
 	}
 
 	dataCount := len(result) //количество вхождений
-	for i, v := range result {
-		fmt.Println(v)
-		_ = i
-
-	}
 
 	log.Printf("Чтение файла %s завершено успешно. Количество прочитанных позиций: %v", name, dataCount)
 
@@ -167,7 +163,6 @@ func GetFullData(data <-chan DataFromFile) (DataFromFile, error) {
 
 // GetValuesForItem - ищет наличие товара по ID во всех загруженных позициях
 func GetValuesForItem(id string, list DataFromFile) (DataFromFile, error) {
-	log.Printf("Горутина ищет значения для слова %s", id)
 	if id == "" {
 		return DataFromFile{}, fmt.Errorf("ID слова не может быть пустым")
 	}
@@ -256,7 +251,7 @@ func NewFileResult(data MapWithData) error {
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#DDEBF7"}, Pattern: 1},
 	})
-	f.SetCellStyle(sheetName, "A1", fmt.Sprintf("H1"), headerStyle)
+	f.SetCellStyle(sheetName, "A1", "H1", headerStyle)
 
 	fileName := "./work/products_report.xlsx"
 	if err := f.SaveAs(fileName); err != nil {
@@ -304,10 +299,100 @@ func CopyMainFile(filePath string) (string, error) {
 	return copyPath, nil
 }
 
-func PullDataInCopy(filepath string, data MapWithData) error {
-	if filepath == "" {
-		return fmt.Errorf("Путь к файлу пустой")
+// PullDataInCopy заполняет файл-копию
+func PullDataInCopy(filePath string, data MapWithData) error {
+	if filePath == "" {
+		return fmt.Errorf("путь к файлу пустой")
 	}
-	log.Println("Запущена процедура записи данных в файл")
+	log.Println("Запущена процедура записи данных в файл", filePath)
+	f, err := excelize.OpenFile(filePath)
+	if err != nil {
+		return fmt.Errorf("ошибка открытия файла: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Println("Ошибка закрытия файла:", err)
+		}
+	}()
 
+	sheetName := "Заявка на участие в процедуре"
+	rows, err := f.GetRows(sheetName)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения листа: %v", err)
+	}
+
+	updatedCount := 0
+	startRow := 17 // Таблица начинается с 17-й строки
+
+	for rowIdx := startRow - 1; rowIdx < len(rows); rowIdx++ {
+		row := rows[rowIdx]
+		if len(row) < 3 { // Проверяем, что строка содержит как минимум 3 колонки
+			continue
+		}
+
+		productID := strings.TrimSpace(row[2]) // ID товара в 3-й колонке (C)
+		if dataFromFile, exists := data.IdProduct[productID]; exists && len(dataFromFile.Line) > 0 {
+			line := dataFromFile.Line[0] // Берем первую (и единственную) запись
+			excelRowNum := rowIdx + 1    // Нумерация строк в Excel начинается с 1
+
+			// Обновляем значения в соответствующих колонках
+			f.SetCellValue(sheetName, fmt.Sprintf("I%d", excelRowNum), line.Netto)
+			f.SetCellValue(sheetName, fmt.Sprintf("J%d", excelRowNum), line.Brutto)
+			f.SetCellValue(sheetName, fmt.Sprintf("M%d", excelRowNum), line.Count)
+			f.SetCellValue(sheetName, fmt.Sprintf("P%d", excelRowNum), line.Change)
+			f.SetCellValue(sheetName, fmt.Sprintf("S%d", excelRowNum), line.Country)
+			f.SetCellValue(sheetName, fmt.Sprintf("T%d", excelRowNum), line.Consignee)
+
+			updatedCount++
+		}
+	}
+
+	// Добавляем заголовок "Исходный пункт назначения" в T16
+	f.SetCellValue(sheetName, "T16", "Исходный пункт назначения")
+
+	// Сохраняем изменения
+	if err := f.Save(); err != nil {
+		return fmt.Errorf("ошибка сохранения файла: %v", err)
+	}
+
+	log.Printf("Файл успешно обновлен. Обновлено строк: %d", updatedCount)
+	return nil
+}
+
+// GetMaxValues - отбирает значение с максимальной стоимостью для каждого id
+func GetMaxValues(data MapWithData) (MapWithData, error) {
+	result := MapWithData{
+		IdProduct: make(map[string]DataFromFile),
+	}
+
+	log.Println("Запущен процесс отбора данных с максимальной стоимостью")
+	for productID, dataFromFile := range data.IdProduct {
+		if len(dataFromFile.Line) == 0 {
+			continue
+		}
+
+		maxLine := dataFromFile.Line[0]
+		maxCount, _ := strconv.Atoi(dataFromFile.Line[0].Count)
+
+		for _, line := range dataFromFile.Line[1:] {
+			currentCount, err := strconv.Atoi(line.Count)
+			if err != nil {
+				continue
+			}
+
+			if currentCount > maxCount {
+				maxCount = currentCount
+				maxLine = line
+			}
+		}
+
+		// Добавляем в результат
+		result.IdProduct[productID] = DataFromFile{
+			Line: []Line{maxLine},
+		}
+	}
+
+	log.Println("Закончен процесс отбора данных с максимальной стоимостью. Количество элементов с данными:", len(result.IdProduct))
+
+	return result, nil
 }

@@ -85,14 +85,23 @@ func main() {
 		fmt.Println(err)
 	}
 
-	err = app.NewFileResult(resultMap)
+	err = app.NewFileResult(resultMap) //Создаю файл-отчет с выборкой
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	pathToNewFile, err := app.CopyMainFile("./mainFile/main.xlsx")
+	pathToNewFile, err := app.CopyMainFile("./mainFile/main.xlsx") //Создаю копию файла для работы
 	if err != nil {
 		fmt.Println(err)
 	}
-	_ = pathToNewFile
+
+	mapWithMaxCost, err := app.GetMaxValues(resultMap) //отбираю максимальную стоимость позиция для каждого ID
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	err = app.PullDataInCopy(pathToNewFile, mapWithMaxCost) //запись данных в файл с отбором по ID
+	if err != nil {
+		fmt.Println(err)
+	}
 }
