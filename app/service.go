@@ -2,9 +2,13 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -55,11 +59,6 @@ func GetDataFromMainExcel(name string) ([]string, error) {
 	}
 
 	dataCount := len(result) //количество вхождений
-	for i, v := range result {
-		fmt.Println(v)
-		_ = i
-
-	}
 
 	log.Printf("Чтение файла %s завершено успешно. Количество прочитанных позиций: %v", name, dataCount)
 
@@ -164,7 +163,6 @@ func GetFullData(data <-chan DataFromFile) (DataFromFile, error) {
 
 // GetValuesForItem - ищет наличие товара по ID во всех загруженных позициях
 func GetValuesForItem(id string, list DataFromFile) (DataFromFile, error) {
-	log.Printf("Горутина ищет значения для слова %s", id)
 	if id == "" {
 		return DataFromFile{}, fmt.Errorf("ID слова не может быть пустым")
 	}
@@ -199,6 +197,9 @@ func GetMap(data <-chan LineResult) (MapWithData, error) {
 }
 
 func NewFileResult(data MapWithData) error {
+	if err := os.MkdirAll("./work", 0755); err != nil {
+		return fmt.Errorf("не удалось создать папку work: %v", err)
+	}
 	f := excelize.NewFile()
 	defer func() {
 		if err := f.Close(); err != nil {
@@ -250,14 +251,148 @@ func NewFileResult(data MapWithData) error {
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#DDEBF7"}, Pattern: 1},
 	})
-	f.SetCellStyle(sheetName, "A1", fmt.Sprintf("H1"), headerStyle)
+	f.SetCellStyle(sheetName, "A1", "H1", headerStyle)
 
-	fileName := "products_report.xlsx"
+	fileName := "./work/products_report.xlsx"
 	if err := f.SaveAs(fileName); err != nil {
 		log.Fatal("Ошибка сохранения файла:", err)
 	}
 
-	fmt.Printf("Отчет успешно создан: %s\n", fileName)
-	fmt.Printf("Всего товаров: %d\n", len(data.IdProduct))
+	log.Printf("Отчет успешно создан: %s\n", fileName)
+	log.Printf("Всего товаров: %d\n", len(data.IdProduct))
 	return nil
+}
+
+// CopyMainFile создает рабочую копию основного файла
+func CopyMainFile(filePath string) (string, error) {
+	// Создаем папку для рабочих файлов
+	workDir := "./work"
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return "", fmt.Errorf("ошибка создания рабочей папки: %v", err)
+	}
+
+	// Формируем имя копии с timestamp
+	ext := filepath.Ext(filePath)
+	filename := strings.TrimSuffix(filepath.Base(filePath), ext)
+	timestamp := time.Now().Format("20060102_150405")
+	copyName := fmt.Sprintf("%s_work_%s%s", filename, timestamp, ext)
+	copyPath := filepath.Join(workDir, copyName)
+
+	// Копируем файл
+	src, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка открытия исходного файла: %v", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(copyPath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания копии: %v", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", fmt.Errorf("ошибка копирования данных: %v", err)
+	}
+
+	log.Printf("Создана рабочая копия: %s", copyPath)
+	return copyPath, nil
+}
+
+// PullDataInCopy заполняет файл-копию
+func PullDataInCopy(filePath string, data MapWithData) error {
+	if filePath == "" {
+		return fmt.Errorf("путь к файлу пустой")
+	}
+	log.Println("Запущена процедура записи данных в файл", filePath)
+	f, err := excelize.OpenFile(filePath)
+	if err != nil {
+		return fmt.Errorf("ошибка открытия файла: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Println("Ошибка закрытия файла:", err)
+		}
+	}()
+
+	sheetName := "Заявка на участие в процедуре"
+	rows, err := f.GetRows(sheetName)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения листа: %v", err)
+	}
+
+	updatedCount := 0
+	startRow := 17 // Таблица начинается с 17-й строки
+
+	for rowIdx := startRow - 1; rowIdx < len(rows); rowIdx++ {
+		row := rows[rowIdx]
+		if len(row) < 3 { // Проверяем, что строка содержит как минимум 3 колонки
+			continue
+		}
+
+		productID := strings.TrimSpace(row[2]) // ID товара в 3-й колонке (C)
+		if dataFromFile, exists := data.IdProduct[productID]; exists && len(dataFromFile.Line) > 0 {
+			line := dataFromFile.Line[0] // Берем первую (и единственную) запись
+			excelRowNum := rowIdx + 1    // Нумерация строк в Excel начинается с 1
+
+			// Обновляем значения в соответствующих колонках
+			f.SetCellValue(sheetName, fmt.Sprintf("I%d", excelRowNum), line.Netto)
+			f.SetCellValue(sheetName, fmt.Sprintf("J%d", excelRowNum), line.Brutto)
+			f.SetCellValue(sheetName, fmt.Sprintf("M%d", excelRowNum), line.Count)
+			f.SetCellValue(sheetName, fmt.Sprintf("P%d", excelRowNum), line.Change)
+			f.SetCellValue(sheetName, fmt.Sprintf("S%d", excelRowNum), line.Country)
+			f.SetCellValue(sheetName, fmt.Sprintf("T%d", excelRowNum), line.Consignee)
+
+			updatedCount++
+		}
+	}
+
+	// Добавляем заголовок "Исходный пункт назначения" в T16
+	f.SetCellValue(sheetName, "T16", "Исходный пункт назначения")
+
+	// Сохраняем изменения
+	if err := f.Save(); err != nil {
+		return fmt.Errorf("ошибка сохранения файла: %v", err)
+	}
+
+	log.Printf("Файл успешно обновлен. Обновлено строк: %d", updatedCount)
+	return nil
+}
+
+// GetMaxValues - отбирает значение с максимальной стоимостью для каждого id
+func GetMaxValues(data MapWithData) (MapWithData, error) {
+	result := MapWithData{
+		IdProduct: make(map[string]DataFromFile),
+	}
+
+	log.Println("Запущен процесс отбора данных с максимальной стоимостью")
+	for productID, dataFromFile := range data.IdProduct {
+		if len(dataFromFile.Line) == 0 {
+			continue
+		}
+
+		maxLine := dataFromFile.Line[0]
+		maxCount, _ := strconv.Atoi(dataFromFile.Line[0].Count)
+
+		for _, line := range dataFromFile.Line[1:] {
+			currentCount, err := strconv.Atoi(line.Count)
+			if err != nil {
+				continue
+			}
+
+			if currentCount > maxCount {
+				maxCount = currentCount
+				maxLine = line
+			}
+		}
+
+		// Добавляем в результат
+		result.IdProduct[productID] = DataFromFile{
+			Line: []Line{maxLine},
+		}
+	}
+
+	log.Println("Закончен процесс отбора данных с максимальной стоимостью. Количество элементов с данными:", len(result.IdProduct))
+
+	return result, nil
 }
